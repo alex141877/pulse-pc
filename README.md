@@ -18,6 +18,14 @@ Après avoir poussé les fichiers sur GitHub, ouvre l'onglet **Actions**, sélec
 
 L'agent PulsePC doit tourner sur Debian et être publié par Tailscale Serve en HTTPS. Dans l'app, **Ajouter un PC** : nom du PC, URL HTTPS Tailscale (ex. `https://debian-machine.example.ts.net`) et jeton de `/etc/pulsepc/token`.
 
+Pour mettre à jour l'agent Debian vers la version avec pré-vérification CORS (requise par l'app Android), lance sur Debian :
+
+```bash
+sudo curl -fsSL https://raw.githubusercontent.com/alex141877/pulse-pc/main/agent.py -o /opt/pulsepc/agent.py
+sudo systemctl restart pulsepc
+sudo systemctl --no-pager status pulsepc
+```
+
 Si l'agent a été installé avant l'activation CORS, remplace son fichier sur Debian par la version actuelle de `agent.py`, puis redémarre uniquement PulsePC :
 
 ```bash
