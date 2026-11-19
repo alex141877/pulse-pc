@@ -7,6 +7,7 @@ from pathlib import Path
 PORT = int(os.getenv("PULSEPC_PORT", "8765"))
 TOKEN_FILE = Path(os.getenv("PULSEPC_TOKEN_FILE", "/etc/pulsepc/token"))
 TOKEN = TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else ""
+_cpu_previous = None
 
 def run(*args):
     try: return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
@@ -15,6 +16,23 @@ def run(*args):
 def read(path):
     try: return Path(path).read_text().strip()
     except Exception: return ""
+
+def cpu_percent():
+    """Calculate busy CPU time between API polls, like Linux monitors do."""
+    global _cpu_previous
+    try:
+        fields = read("/proc/stat").splitlines()[0].split()[1:]
+        values = [int(x) for x in fields]
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        total = sum(values)
+        previous = _cpu_previous
+        _cpu_previous = (total, idle)
+        if previous is None: return 0
+        total_delta = total - previous[0]
+        idle_delta = idle - previous[1]
+        if total_delta <= 0: return 0
+        return round(max(0, min(100, 100 * (total_delta - idle_delta) / total_delta)))
+    except Exception: return 0
 
 def metrics():
     load = os.getloadavg()[0] if hasattr(os, "getloadavg") else 0
@@ -38,7 +56,7 @@ def metrics():
     nv=run("nvidia-smi","--query-gpu=name,utilization.gpu,temperature.gpu","--format=csv,noheader,nounits")
     if nv:
         p=[x.strip() for x in nv.split(",")]; gpu={"name":p[0],"usage":int(p[1]),"temp":int(p[2])}
-    return {"name":platform.node(),"os":platform.platform(),"uptime":int(time.time()-float(read("/proc/uptime").split()[0])),"cpu":{"usage":round(min(100,load/cpus*100)),"name":platform.processor() or platform.machine(),"cores":cpus,"load":round(load,2)},"memory":{"total":total,"used":total-available},"disk":{"total":totaldisk,"used":used},"temperature":round(sum(temps)/len(temps)) if temps else None,"gpu":gpu or None,"tailscale":"connecté" if run("tailscale","status") else "inconnu","updated":int(time.time())}
+    return {"name":platform.node(),"os":platform.platform(),"uptime":int(time.time()-float(read("/proc/uptime").split()[0])),"cpu":{"usage":cpu_percent(),"name":platform.processor() or platform.machine(),"cores":cpus,"load":round(load,2)},"memory":{"total":total,"used":total-available},"disk":{"total":totaldisk,"used":used,"mount":"/"},"temperature":round(sum(temps)/len(temps)) if temps else None,"gpu":gpu or None,"tailscale":"connecté" if run("tailscale","status") else "inconnu","updated":int(time.time())}
 
 class Handler(BaseHTTPRequestHandler):
     def cors(self):
