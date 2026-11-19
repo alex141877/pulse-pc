@@ -5,10 +5,14 @@ Application web installable sur Android. L'interface est publiée sur GitHub Pag
 ## Publier
 
 1. Crée un dépôt GitHub (par exemple `pulsepc`).
-2. Ajoute à la racine du dépôt ces quatre fichiers : `index.html`, `manifest.webmanifest`, `sw.js` et `README.md`.
+2. Ajoute à la racine du dépôt le contenu complet de ce dossier, y compris `android/`, `.github/workflows/` et les icônes PNG.
 3. Dans **Settings → Pages**, choisis **Deploy from a branch**, branche `main`, dossier `/ (root)`, puis **Save**.
 4. Attends la publication et ouvre l'URL Pages indiquée par GitHub depuis Chrome sur Android.
 5. Dans Chrome, menu **⋮ → Installer l'application** ou **Ajouter à l'écran d'accueil**.
+
+## Construire l'APK Android
+
+Après avoir poussé les fichiers sur GitHub, ouvre l'onglet **Actions**, sélectionne **Build PulsePC Android APK**, puis **Run workflow**. À la fin, télécharge l'artefact **PulsePC-Android-APK** et récupère `app-debug.apk` dedans. Transfère l'APK sur le téléphone et ouvre-le pour l'installer ; Android peut demander d'autoriser l'installation depuis cette source.
 
 ## Connecter Debian
 
