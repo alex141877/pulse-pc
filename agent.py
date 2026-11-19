@@ -64,5 +64,5 @@ if __name__=="__main__":
     if not TOKEN: raise SystemExit("Configure /etc/pulsepc/token first")
     ip=run("tailscale","ip","-4")
     if not ip: raise SystemExit("Tailscale is not connected")
-    print(f"PulsePC API on http://{ip}:{PORT}")
-    ThreadingHTTPServer((ip,PORT),Handler).serve_forever()
+    print(f"PulsePC API on http://127.0.0.1:{PORT} (via Tailscale Serve at {ip})")
+    ThreadingHTTPServer(("127.0.0.1",PORT),Handler).serve_forever()
