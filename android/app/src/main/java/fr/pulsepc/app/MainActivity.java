@@ -93,18 +93,22 @@ public class MainActivity extends Activity {
     }
 
     private void offerUpdate(String tag, String url) {
-        if (isFinishing() || isDestroyed()) return;
-        new AlertDialog.Builder(this)
-                .setTitle("Mise à jour PulsePC " + tag)
-                .setMessage("Après téléchargement, ouvre l’APK dans tes téléchargements et confirme la mise à jour Android.")
-                .setNegativeButton("Plus tard", null)
-                .setPositiveButton("Télécharger", (dialog, which) -> {
-                    DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url))
-                            .setTitle("PulsePC " + tag)
-                            .setMimeType("application/vnd.android.package-archive")
-                            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "PulsePC-" + tag + ".apk");
-                    getSystemService(DownloadManager.class).enqueue(request);
-                }).show();
+        android.content.SharedPreferences preferences = getSharedPreferences("updates", MODE_PRIVATE);
+        if (isFinishing() || isDestroyed() || preferences.getString("downloaded", "").equals(tag)) return;
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url))
+                    .setTitle("PulsePC " + tag)
+                    .setMimeType("application/vnd.android.package-archive")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "PulsePC-" + tag + ".apk");
+            getSystemService(DownloadManager.class).enqueue(request);
+            preferences.edit().putString("downloaded", tag).apply();
+            new AlertDialog.Builder(this)
+                    .setTitle("Mise à jour PulsePC " + tag)
+                    .setMessage("Le téléchargement a démarré. À la fin, ouvre l’APK dans tes téléchargements et confirme l’installation.")
+                    .setPositiveButton("OK", null).show();
+        } catch (RuntimeException ignored) {
+            // Retry on the next launch if the Android download service is unavailable.
+        }
     }
 }

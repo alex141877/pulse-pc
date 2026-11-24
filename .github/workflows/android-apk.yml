@@ -1,4 +1,4 @@
-name: Build PulsePC Android APK
+name: Build PulsePC installers
 on:
   workflow_dispatch:
   push:
@@ -6,12 +6,13 @@ on:
       - 'index.html'
       - 'app.*'
       - 'android/**'
+      - 'desktop/**'
       - 'icon-*.png'
       - '.github/workflows/android-apk.yml'
 permissions:
   contents: read
 jobs:
-  apk:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,12 +20,64 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Install Android SDK packages
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-35" "build-tools;35.0.0"
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.9'
-      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-      - run: gradle --no-daemon -p android assembleRelease
+          cache-disabled: true
+      - name: Build signed APK
+        env:
+          KEY_DATA: ${{ secrets.PULSEPC_ANDROID_KEY }}
+          PULSEPC_KEYPASS: ${{ secrets.PULSEPC_ANDROID_PASSWORD }}
+        run: |
+          set -eu
+          test -n "$KEY_DATA"
+          test -n "$PULSEPC_KEYPASS"
+          export PULSEPC_KEYSTORE="$RUNNER_TEMP/pulsepc.jks"
+          umask 077
+          trap 'rm -f "$PULSEPC_KEYSTORE"' EXIT
+          printf '%s' "$KEY_DATA" | base64 -d > "$PULSEPC_KEYSTORE"
+          unset KEY_DATA
+          gradle --no-daemon -p android assembleRelease
+          mkdir -p installers
+          cp android/app/build/outputs/apk/release/app-release.apk installers/PulsePC-Android.apk
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify installers/PulsePC-Android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: PulsePC-Android-non-signe
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          name: PulsePC-Android
+          path: installers/PulsePC-Android.apk
+          if-no-files-found: error
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Copy UI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desktop/ui | Out-Null
+          Copy-Item index.html,app.css,app.js,manifest.webmanifest,icon-192.png,icon-512.png desktop/ui
+      - name: Build Windows installer
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm ci
+          npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PulsePC-Windows
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.blockmap
+            desktop/dist/latest.yml
+          if-no-files-found: error
