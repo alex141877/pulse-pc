@@ -1,0 +1,10 @@
+desktop/node_modules/
+desktop/dist/
+desktop/ui/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/src/main/assets/
+__pycache__/
+*.jks
+*.keystore

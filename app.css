@@ -1,0 +1,19 @@
+*{box-sizing:border-box}
+:root{color-scheme:dark;--bg:#101821;--panel:#182432;--line:#344758;--muted:#acbdcb;--text:#f1f7fa;--green:#79eac0;--orange:#ffc180;--red:#ff9a9f}
+body{margin:0;background:radial-gradient(ellipse at top,#203443,var(--bg) 500px);color:var(--text);font:15px/1.45 system-ui,sans-serif}
+main{max-width:1120px;margin:auto;padding:24px max(16px,env(safe-area-inset-left)) 32px}
+header,.actions,.title{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px;font-size:22px;font-weight:750}.brand img{width:42px;height:42px}
+h1{margin:28px 0 12px;font-size:clamp(26px,4vw,38px)}h2{margin:0 0 8px}h3{margin:0 0 8px;font-size:16px}
+button,input,select{font:inherit;border:1px solid var(--line);border-radius:10px;background:#203243;color:inherit;padding:10px 12px}
+button{cursor:pointer}button:disabled{opacity:.55;cursor:default}button:hover:not(:disabled){border-color:var(--green)}:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:12px}
+.card,.panel{border:1px solid var(--line);background:var(--panel);border-radius:15px;padding:16px;min-width:0;overflow-wrap:anywhere}
+.card{text-align:left}.card[aria-pressed=true]{border-color:var(--green)}.card strong{display:block;font-size:17px}
+.badge{display:inline-block;padding:3px 8px;border:1px solid currentColor;border-radius:20px;font-size:12px;color:var(--muted)}
+.green{color:var(--green)}.orange{color:var(--orange)}.red{color:var(--red)}
+.muted,small,dt{color:var(--muted)}.panel p{margin:4px 0}.value{font-weight:700;font-size:23px}
+#detail{margin-top:20px}#detail>.panel{margin-bottom:12px}.metrics{margin:12px 0}.metrics dl{margin:8px 0 0}.metrics dl div{display:flex;justify-content:space-between;gap:8px}dd{margin:0}
+.chart{display:block;width:100%;height:56px;margin-top:10px;color:var(--green)}.history{margin:0;padding-left:21px}.history li{margin:8px 0}
+dialog{border:1px solid var(--line);border-radius:15px;background:var(--panel);color:var(--text);width:min(95%,460px);max-height:90vh}dialog::backdrop{background:#000a}label{display:grid;gap:4px;margin:8px 0}input,select{width:100%}#editError,#feedback{min-height:1em;color:var(--orange)}
+@media(max-width:520px){main{padding-top:14px}.grid.metrics{grid-template-columns:1fr 1fr}.panel,.card{padding:12px}.value{font-size:19px}.metrics dl div{display:block}.title{align-items:flex-start}}
