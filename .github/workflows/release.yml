@@ -1,0 +1,45 @@
+name: Publish PulsePC installers
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Run ID of the successful installer build
+        required: true
+        type: string
+      tag:
+        description: Release version, for example v2.0.0
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.build }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Verify build and version
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          read -r workflow status commit < <(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq '[.path,.conclusion,.head_sha] | @tsv')
+          test "$workflow" = ".github/workflows/android-apk.yml"
+          test "$status" = "success"
+          desktopVersion=$(gh api "repos/$GH_REPO/contents/desktop/package.json?ref=$commit" --jq .content | base64 -d | jq -r .version)
+          test "v$desktopVersion" = "$TAG"
+          gh api "repos/$GH_REPO/contents/android/app/build.gradle?ref=$commit" --jq .content | base64 -d | grep -Fx "        versionName '$desktopVersion'"
+          printf 'BUILD_SHA=%s\n' "$commit" >> "$GITHUB_ENV"
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --name PulsePC-Android --dir installers
+          gh run download "$RUN_ID" --name PulsePC-Windows --dir installers
+          test -f installers/PulsePC-Android.apk
+          test -f "installers/PulsePC-Setup-${TAG#v}.exe"
+          test -f installers/latest.yml
+          gh release create "$TAG" installers/* --target "$BUILD_SHA" --title "PulsePC $TAG" --notes "Installateurs Android et Windows x64. Instructions et configuration dans le README du dépôt."
