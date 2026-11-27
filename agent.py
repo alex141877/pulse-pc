@@ -7,16 +7,21 @@ import os
 import platform
 import re
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 ETC = Path("/etc/pulsepc")
 PORT = int(os.getenv("PULSEPC_PORT", "8765"))
 TOKEN = Path(os.getenv("PULSEPC_TOKEN_FILE", str(ETC / "token")))
 STATE = Path(os.getenv("STATE_DIRECTORY", "/var/lib/pulsepc")) / "history.json"
+SAMPLE_DB = STATE.with_name("samples.sqlite3")
+PERIODS = {"1h": (3600, 10), "24h": (86400, 240), "7d": (604800, 1800)}
 LOCK = threading.Lock()
 LATEST = None
 PREVIOUS_CPU = None
@@ -100,7 +105,7 @@ def metrics():
                    "temp": int(parts[2]) if parts[2].strip().isdigit() else None}
     model = next((line.partition(":")[2].strip() for line in read("/proc/cpuinfo").splitlines()
                   if line.startswith("model name")), platform.machine())
-    return {"name": platform.node(), "os": platform.platform(), "uptime": duration(), "apiVersion": 2,
+    return {"name": platform.node(), "os": platform.platform(), "uptime": duration(), "apiVersion": 3,
             "cpu": {"usage": cpu_usage(), "name": model, "cores": os.cpu_count(), "load": round(os.getloadavg()[0], 2)},
             "memory": {"total": total, "used": used, "available": available, "free": free, "cached": cached},
             "disk": {"total": disk.f_blocks * disk.f_frsize, "used": used_disk, "available": available_disk,
@@ -119,18 +124,51 @@ def classify(sample):
             reasons.append(f"{label} : {value:.0f}{' °C' if label.startswith('Température') else ' %'}")
     return {"level": ("green", "orange", "red")[severity], "reason": ", ".join(reasons) or "Dans les seuils"}
 
+def record_sample(point, prune_before=None):
+    with closing(sqlite3.connect(SAMPLE_DB)) as db, db:
+        db.execute("INSERT OR REPLACE INTO samples VALUES (?, ?, ?, ?, ?)",
+                   (point["time"], point["cpu"], point["ram"], point["temperature"], point["disk"]))
+        if prune_before is not None:
+            db.execute("DELETE FROM samples WHERE time < ?", (prune_before,))
+
+
+def period_samples(period):
+    seconds, bucket = PERIODS[period]
+    start = int(time.time()) - seconds
+    with closing(sqlite3.connect(SAMPLE_DB)) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute("""
+            SELECT MAX(time) AS time, ROUND(AVG(cpu), 1) AS cpu, ROUND(AVG(ram), 1) AS ram,
+                   ROUND(AVG(temperature), 1) AS temperature, ROUND(AVG(disk), 1) AS disk
+            FROM samples
+            WHERE time >= ?
+            GROUP BY time / ?
+            ORDER BY time ASC
+        """, (start, bucket))
+        return [dict(row) for row in rows]
+
+
 def sample_loop():
+    next_prune = 0
     global LATEST
     previous = EVENTS[-1]["level"] if EVENTS else None
     while True:
         try:
             sample = metrics()
             sample["status"] = classify(sample)
+            point = {"time": sample["updated"], "cpu": sample["cpu"]["usage"],
+                     "ram": round(100 * sample["memory"]["used"] / sample["memory"]["total"]),
+                     "temperature": sample["temperature"], "disk": sample["disk"]["percent"]}
+            try:
+                now = point["time"]
+                record_sample(point, now - PERIODS["7d"][0] if now >= next_prune else None)
+                if now >= next_prune:
+                    next_prune = now + 3600
+            except sqlite3.Error as error:
+                print(f"PulsePC sample history: {error}", flush=True)
             with LOCK:
                 LATEST = sample
-                SAMPLES.append({"time": sample["updated"], "cpu": sample["cpu"]["usage"],
-                                "ram": round(100 * sample["memory"]["used"] / sample["memory"]["total"]),
-                                "temperature": sample["temperature"], "disk": sample["disk"]["percent"]})
+                SAMPLES.append(point)
                 del SAMPLES[:-180]
                 level = sample["status"]["level"]
                 if level != previous:
@@ -185,7 +223,8 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(204)
 
     def do_GET(self):
-        name = "index.html" if self.path == "/" else self.path.lstrip("/")
+        request = urlsplit(self.path)
+        name = "index.html" if request.path == "/" else request.path.lstrip("/")
         if name in {"index.html", "app.js", "app.css", "manifest.webmanifest", "icon-192.png", "icon-512.png", "sw.js"}:
             try:
                 content = Path(__file__).with_name(name).read_bytes()
@@ -200,14 +239,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             return self.respond(200, {"ok": True})
-        if self.path not in {"/api/status", "/api/history"}:
+        if request.path not in {"/api/status", "/api/history"}:
             return self.respond(404, {"error": "Route inconnue."})
         if not self.authorized(read(TOKEN)):
             return self.respond(401, {"error": "Jeton de suivi refusé."})
         with LOCK:
             data = dict(LATEST) if LATEST else None
-            if self.path == "/api/history":
+            if request.path == "/api/history":
                 data = {"events": list(EVENTS), "samples": list(SAMPLES)}
+        if request.path == "/api/history":
+            period = parse_qs(request.query).get("period", [None])[0]
+            if period is not None:
+                if period not in PERIODS:
+                    return self.respond(400, {"error": "Période inconnue."})
+                try:
+                    data["samples"] = period_samples(period)
+                except sqlite3.Error:
+                    return self.respond(503, {"error": "Historique momentanément indisponible."})
         self.respond(200 if data else 503, data or {"error": "Première mesure en cours."})
 
     def do_POST(self):
@@ -255,5 +303,8 @@ if __name__ == "__main__":
         EVENTS[:] = json.loads(read(STATE) or "[]")[-500:]
     except (ValueError, TypeError):
         pass
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(SAMPLE_DB)) as db, db:
+        db.execute("CREATE TABLE IF NOT EXISTS samples (time INTEGER PRIMARY KEY, cpu REAL, ram REAL, temperature REAL, disk REAL)")
     threading.Thread(target=sample_loop, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

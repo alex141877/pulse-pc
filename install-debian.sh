@@ -28,6 +28,7 @@ fi
 for asset in index.html app.css app.js manifest.webmanifest icon-192.png icon-512.png sw.js; do
   if [ -f "$asset" ]; then install -m 0644 "$asset" "$BASE/$asset"; fi
 done
+if [ -f pair.py ]; then install -m 0644 pair.py "$BASE/pair.py"; fi
 install -m 0644 agent.py "$BASE/agent.py.new"
 mv "$BASE/agent.py.new" "$BASE/agent.py"
 if [ ! -f /etc/systemd/system/pulsepc.service ]; then

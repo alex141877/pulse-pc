@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https:; object-src 'none'; base-uri 'none'; form-action 'none'">
-<meta name="theme-color" content="#101821">
+<meta name="theme-color" content="#0b121b">
 <link rel="icon" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="app.css">
@@ -12,25 +12,35 @@
 <title>PulsePC</title>
 </head>
 <body>
+<aside class="sidebar">
+<div class="brand"><img src="icon-192.png" alt="">PulsePC</div>
+<nav aria-label="Navigation principale">
+<button type="button" data-view="overview"><span aria-hidden="true">⌂</span>Vue d’ensemble</button>
+<button type="button" data-view="nodes"><span aria-hidden="true">◇</span>Nœuds</button>
+<button type="button" data-view="settings"><span aria-hidden="true">⚙</span>Paramètres</button>
+</nav>
+</aside>
 <main>
-<header><div class="brand"><img src="icon-192.png" alt="">PulsePC</div><button id="add">Ajouter un PC</button></header>
-<h1>Vue d’ensemble</h1>
-<section id="devices" class="grid" aria-label="Ordinateurs"></section>
-<section id="detail" aria-label="Détails de la machine"></section>
+<div id="content" aria-label="Suivi des machines"></div>
 <p id="feedback" role="status"></p>
 </main>
 <dialog id="editor">
-<form method="dialog">
-<h2>Configuration du PC</h2>
-<label>Nom <input name="name" required maxlength="80"></label>
-<label>Adresse HTTPS Tailscale <input name="url" type="url" required placeholder="https://debian.example.ts.net"></label>
-<label>Jeton de suivi <input name="token" type="password" required autocomplete="off"></label>
-<label>Jeton de commande <input name="control" type="password" autocomplete="off"></label>
-<label id="sshField">Utilisateur SSH <input name="ssh" placeholder="alex"></label>
-<label>Relais Wake-on-LAN <select name="relay"></select></label>
+<form id="pc-form" method="dialog">
+<h2 id="editor-title">Ajouter un PC</h2>
+<label>Nom <input name="name" required maxlength="80" placeholder="PC guigui"></label>
+<label id="ssh-field">Adresse SSH <input name="ssh" placeholder="alex@debian-machine" autocomplete="off" spellcheck="false"></label>
+<label>Jeton d’appairage <input name="pairing" type="password" autocomplete="off" spellcheck="false" placeholder="ppc1.…"></label>
+<p id="pair-help" class="muted"></p>
+<p id="edit-error" role="alert"></p>
+<div class="actions"><button value="cancel" formnovalidate>Annuler</button><button class="primary" value="save">Enregistrer</button></div>
+</form>
+</dialog>
+<dialog id="wake-editor">
+<form id="wake-form" method="dialog">
+<h2>Wake-on-LAN</h2>
+<label>Relais <select name="relay"></select></label>
 <label>Identifiant de la cible sur le relais <input name="target"></label>
-<p id="editError" role="alert"></p>
-<div class="actions"><button value="cancel" formnovalidate>Annuler</button><button value="save">Enregistrer</button></div>
+<div class="actions"><button value="cancel" formnovalidate>Annuler</button><button class="primary" value="save">Enregistrer</button></div>
 </form>
 </dialog>
 </body>

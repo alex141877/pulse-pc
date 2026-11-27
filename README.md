@@ -1,13 +1,12 @@
 # PulsePC
 
-PulsePC suit plusieurs PC Linux depuis Windows et Android avec la même interface. Chaque agent Debian mesure le CPU, la RAM, le stockage et les capteurs disponibles toutes les cinq secondes. Il conserve les 500 derniers changements d'état et expose les 15 dernières minutes de mesures pour les graphiques. L'historique des états est partagé entre les appareils. Les graphiques repartent à zéro après le redémarrage de l'agent.
+PulsePC suit plusieurs PC Linux depuis Windows et Android avec la même interface. Chaque agent Debian mesure le CPU, la RAM, le stockage et les capteurs disponibles toutes les cinq secondes. Il conserve les 500 derniers changements d'état et expose jusqu’à sept jours de mesures pour les graphiques 1 h, 24 h et 7 j. Les mesures et les événements sont enregistrés sur le PC et partagés entre les clients. La collecte commence à l’installation de l’agent v3.
 
 ## Debian
 
 Depuis le dossier source, lancer `sudo sh install-debian.sh`. Pour autoriser l'arrêt et le redémarrage lors de la première configuration, ajouter `--enable-power`. Un fichier existant `/etc/pulsepc/actions.json` est conservé. Contrôler que `tailscale serve status` affiche un point d'entrée HTTPS **tailnet only** vers `http://127.0.0.1:8765`. Sur une machine sans autre configuration Tailscale Serve, on peut créer ce point d'entrée avec `sudo tailscale serve --bg http://127.0.0.1:8765`.
 
-Dans PulsePC, ajouter le PC avec son adresse HTTPS et le jeton de suivi renvoyé par `sudo cat /etc/pulsepc/token`. Saisir les mêmes paramètres sur les deux appareils pour y suivre les mêmes PC. Pour les actions, ajouter séparément le jeton de commande renvoyé par `sudo cat /etc/pulsepc/control-token`. Ces jetons sont à conserver sur les appareils de confiance.
-
+Générer le jeton d’appairage sur Debian avec `sudo python3 /opt/pulsepc/pair.py https://debian.example.ts.net`, en utilisant l’adresse réelle de Tailscale Serve. Dans PulsePC, saisir le nom du PC et coller le jeton complet. Sur Windows, saisir aussi l’adresse SSH (par exemple `alex@debian-machine`) si elle diffère de l’adresse proposée par défaut. Le jeton inclut le suivi et le contrôle. Ajouter `--read-only` à la commande pour un jeton réservé au suivi. Les PC déjà ajoutés gardent leur configuration.
 Sous Windows, le bouton **Se connecter** lance OpenSSH et exécute `su -` sur Debian. Ouvrir la session SSH avec ses identifiants habituels, puis saisir le mot de passe root dans le terminal. PulsePC lance `tailscale up` au démarrage de Windows si Tailscale est installé à l'emplacement habituel. Sous Android, connecter Tailscale à la même tailnet avant d'ouvrir PulsePC.
 
 ### Wake-on-LAN
