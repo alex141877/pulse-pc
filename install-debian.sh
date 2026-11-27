@@ -3,7 +3,7 @@ set -eu
 umask 077
 BASE=/opt/pulsepc
 ETC=/etc/pulsepc
-if [ "$(id -u)" -ne 0 ]; then exec sudo -- "$0" "$@"; fi
+if [ "$(id -u)" -ne 0 ]; then exec sudo sh "$0" "$@"; fi
 if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != --enable-power ]; }; then
   echo "Usage: $0 [--enable-power]" >&2
   exit 2
@@ -54,4 +54,4 @@ systemctl daemon-reload
 systemctl enable pulsepc
 systemctl restart pulsepc
 systemctl is-active pulsepc
-printf '\nJetons : sudo cat /etc/pulsepc/token et sudo cat /etc/pulsepc/control-token\n'
+printf '\nAppairage : sudo python3 /opt/pulsepc/pair.py\n'

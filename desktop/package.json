@@ -1,7 +1,7 @@
 {
   "name": "pulsepc-desktop",
   "productName": "PulsePC",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "main": "main.cjs",
   "scripts": {
     "dist": "electron-builder --win nsis --x64 --publish never"

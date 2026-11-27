@@ -15,9 +15,9 @@
 <aside class="sidebar">
 <div class="brand"><img src="icon-192.png" alt="">PulsePC</div>
 <nav aria-label="Navigation principale">
-<button type="button" data-view="overview"><span aria-hidden="true">⌂</span>Vue d’ensemble</button>
-<button type="button" data-view="nodes"><span aria-hidden="true">◇</span>Nœuds</button>
-<button type="button" data-view="settings"><span aria-hidden="true">⚙</span>Paramètres</button>
+<button type="button" data-view="overview">Vue d’ensemble</button>
+<button type="button" data-view="nodes">Nœuds</button>
+<button type="button" data-view="settings">Paramètres</button>
 </nav>
 </aside>
 <main>
@@ -25,8 +25,32 @@
 <p id="feedback" role="status"></p>
 </main>
 <dialog id="editor">
-<form id="pc-form" method="dialog">
 <h2 id="editor-title">Ajouter un PC</h2>
+<div class="segments setup-tabs" aria-label="Étapes de configuration">
+<button id="setup-tab" type="button">Installer sur Debian</button>
+<button id="connect-tab" type="button">Connecter le PC</button>
+</div>
+<section id="debian-setup">
+  <p class="muted">Sur le PC Debian, avec Tailscale connecté, exécute dans un terminal :</p>
+  <pre><code id="install-code">sudo apt-get update
+sudo apt-get install -y git python3
+pulsepc_dir=$(mktemp -d)
+git clone --depth 1 --branch v2.2.0 https://github.com/alex141877/pulse-pc.git "$pulsepc_dir"
+sudo sh "$pulsepc_dir/install-debian.sh" --enable-power
+sudo tailscale serve status</code></pre>
+  <button id="copy-install" type="button">Copier l’installation</button>
+  <p class="muted">Si aucun service Serve n’est configuré sur ce PC :</p>
+  <pre><code>sudo tailscale serve --bg http://127.0.0.1:8765</code></pre>
+  <p class="muted">Génère ensuite le jeton à coller dans PulsePC :</p>
+  <pre><code id="pair-code">sudo python3 /opt/pulsepc/pair.py</code></pre>
+  <button id="copy-pair" type="button">Copier la commande</button>
+  <p id="setup-feedback" role="status"></p>
+  <div class="actions">
+    <button id="setup-cancel" type="button">Annuler</button>
+    <button id="setup-next" class="primary" type="button">Connecter le PC</button>
+  </div>
+</section>
+<form id="pc-form" method="dialog" hidden>
 <label>Nom <input name="name" required maxlength="80" placeholder="PC guigui"></label>
 <label id="ssh-field">Adresse SSH <input name="ssh" placeholder="alex@debian-machine" autocomplete="off" spellcheck="false"></label>
 <label>Jeton d’appairage <input name="pairing" type="password" autocomplete="off" spellcheck="false" placeholder="ppc1.…"></label>

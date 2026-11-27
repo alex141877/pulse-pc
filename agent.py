@@ -81,6 +81,14 @@ def temperature():
             pass
     return round(max(values), 1) if values else None
 
+def drm_gpu_usage():
+    for device in sorted(Path("/sys/class/drm").glob("card*/device/gpu_busy_percent")):
+        value = read(device)
+        if value.isdecimal() and 0 <= int(value) <= 100:
+            return {"name": "GPU " + device.parent.parent.name, "usage": int(value), "temp": None}
+    return None
+
+
 def metrics():
     mem = {}
     for line in read("/proc/meminfo").splitlines():
@@ -103,9 +111,11 @@ def metrics():
         if len(parts) == 3:
             gpu = {"name": parts[0], "usage": int(parts[1]) if parts[1].strip().isdigit() else None,
                    "temp": int(parts[2]) if parts[2].strip().isdigit() else None}
+    if not gpu or gpu["usage"] is None:
+        gpu = drm_gpu_usage() or gpu
     model = next((line.partition(":")[2].strip() for line in read("/proc/cpuinfo").splitlines()
                   if line.startswith("model name")), platform.machine())
-    return {"name": platform.node(), "os": platform.platform(), "uptime": duration(), "apiVersion": 3,
+    return {"name": platform.node(), "os": platform.platform(), "uptime": duration(), "apiVersion": 4,
             "cpu": {"usage": cpu_usage(), "name": model, "cores": os.cpu_count(), "load": round(os.getloadavg()[0], 2)},
             "memory": {"total": total, "used": used, "available": available, "free": free, "cached": cached},
             "disk": {"total": disk.f_blocks * disk.f_frsize, "used": used_disk, "available": available_disk,
@@ -126,8 +136,8 @@ def classify(sample):
 
 def record_sample(point, prune_before=None):
     with closing(sqlite3.connect(SAMPLE_DB)) as db, db:
-        db.execute("INSERT OR REPLACE INTO samples VALUES (?, ?, ?, ?, ?)",
-                   (point["time"], point["cpu"], point["ram"], point["temperature"], point["disk"]))
+        db.execute("INSERT OR REPLACE INTO samples (time, cpu, ram, temperature, disk, load, gpu) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (point["time"], point["cpu"], point["ram"], point["temperature"], point["disk"], point["load"], point["gpu"]))
         if prune_before is not None:
             db.execute("DELETE FROM samples WHERE time < ?", (prune_before,))
 
@@ -139,7 +149,8 @@ def period_samples(period):
         db.row_factory = sqlite3.Row
         rows = db.execute("""
             SELECT MAX(time) AS time, ROUND(AVG(cpu), 1) AS cpu, ROUND(AVG(ram), 1) AS ram,
-                   ROUND(AVG(temperature), 1) AS temperature, ROUND(AVG(disk), 1) AS disk
+                   ROUND(AVG(temperature), 1) AS temperature, ROUND(AVG(disk), 1) AS disk,
+                   ROUND(AVG(load), 2) AS load, ROUND(AVG(gpu), 1) AS gpu
             FROM samples
             WHERE time >= ?
             GROUP BY time / ?
@@ -158,7 +169,8 @@ def sample_loop():
             sample["status"] = classify(sample)
             point = {"time": sample["updated"], "cpu": sample["cpu"]["usage"],
                      "ram": round(100 * sample["memory"]["used"] / sample["memory"]["total"]),
-                     "temperature": sample["temperature"], "disk": sample["disk"]["percent"]}
+                     "temperature": sample["temperature"], "disk": sample["disk"]["percent"],
+                     "load": sample["cpu"]["load"], "gpu": (sample["gpu"] or {}).get("usage")}
             try:
                 now = point["time"]
                 record_sample(point, now - PERIODS["7d"][0] if now >= next_prune else None)
@@ -202,6 +214,94 @@ def wake(target, settings):
         sender.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sender.sendto(b"\xff" * 6 + bytes.fromhex(mac) * 16, (address, 9))
 
+DEFAULT_PROGRAMS = {
+    "earnapp": {"name": "EarnApp", "kind": "systemd", "target": "earnapp.service"},
+    "honeygain": {"name": "Honeygain", "kind": "docker", "target": "honeygain"},
+    "packetstream": {"name": "PacketStream", "kind": "docker", "target": "psclient"},
+}
+PROGRAM_LOCK = threading.Lock()
+
+
+def configured_programs():
+    path = ETC / "programs.json"
+    if not path.exists():
+        return DEFAULT_PROGRAMS, True
+    try:
+        definition = json.loads(read(path))
+    except ValueError:
+        return {}, False
+    if not isinstance(definition, dict):
+        return {}, False
+    result = {}
+    for key, entry in definition.items():
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", key) or not isinstance(entry, dict):
+            continue
+        name, kind, target = (entry.get(field) for field in ("name", "kind", "target"))
+        if not all(isinstance(value, str) and value for value in (name, kind, target)):
+            continue
+        if kind == "systemd":
+            if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,119}\.service", target):
+                continue
+            if target in {"pulsepc.service", "tailscaled.service", "docker.service", "ssh.service", "sshd.service"}:
+                continue
+        elif kind != "docker" or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", target):
+            continue
+        result[key] = {"name": name[:80], "kind": kind, "target": target}
+    return result, False
+
+
+def docker_program_states():
+    try:
+        listing = subprocess.check_output(
+            ["/usr/bin/docker", "container", "ls", "--all", "--format", "{{.Names}}\t{{.State}}"],
+            text=True, stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return dict(line.split("\t", 1) for line in listing.splitlines() if "\t" in line)
+
+
+def service_state(target):
+    properties = run("/usr/bin/systemctl", "show", "-p", "LoadState", "-p", "ActiveState", "--", target)
+    values = dict(line.split("=", 1) for line in properties.splitlines() if "=" in line)
+    if values.get("LoadState") == "not-found":
+        return "missing"
+    return {"active": "on", "inactive": "off", "failed": "off", "activating": "pending",
+            "deactivating": "pending", "reloading": "pending"}.get(values.get("ActiveState"), "unknown")
+
+
+def program_status():
+    entries, automatic = configured_programs()
+    docker = docker_program_states() if any(entry["kind"] == "docker" for entry in entries.values()) else None
+    states = {"running": "on", "created": "off", "exited": "off", "dead": "off",
+              "restarting": "pending", "removing": "pending", "missing": "missing"}
+    items = []
+    for key, entry in entries.items():
+        if entry["kind"] == "docker":
+            state = "unknown" if docker is None else states.get(docker.get(entry["target"], "missing"), "unknown")
+        else:
+            state = service_state(entry["target"])
+        if not (automatic and state in {"missing", "unknown"}):
+            items.append({"id": key, "name": entry["name"], "kind": entry["kind"], "state": state})
+    return items
+
+
+def change_program(key, operation):
+    entries, _ = configured_programs()
+    entry = entries.get(key)
+    if not entry:
+        raise ValueError("Programme absent de la liste autorisée.")
+    if entry["kind"] == "docker":
+        args = ["/usr/bin/docker", "container", operation]
+        if operation == "stop":
+            args.extend(["--time", "8"])
+    else:
+        args = ["/usr/bin/systemctl", operation, "--no-block"]
+    try:
+        subprocess.run([*args, "--", entry["target"]], check=True, timeout=18, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("Debian a refusé le changement d’état de ce programme.") from error
+
+
 class Handler(BaseHTTPRequestHandler):
     def respond(self, code, data=None):
         raw = b"" if data is None else json.dumps(data).encode()
@@ -239,10 +339,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             return self.respond(200, {"ok": True})
-        if request.path not in {"/api/status", "/api/history"}:
+        if request.path not in {"/api/status", "/api/history", "/api/programs"}:
             return self.respond(404, {"error": "Route inconnue."})
         if not self.authorized(read(TOKEN)):
             return self.respond(401, {"error": "Jeton de suivi refusé."})
+        if request.path == "/api/programs":
+            return self.respond(200, {"programs": program_status()})
         with LOCK:
             data = dict(LATEST) if LATEST else None
             if request.path == "/api/history":
@@ -275,6 +377,19 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeError):
             return self.respond(400, {"error": "Requête invalide."})
         action = data.get("action")
+        if isinstance(action, str) and action in {"program-start", "program-stop"}:
+            target = data.get("target")
+            if not isinstance(target, str) or not target:
+                return self.respond(400, {"error": "Identifiant du programme manquant."})
+            if not PROGRAM_LOCK.acquire(blocking=False):
+                return self.respond(409, {"error": "Un changement de programme est déjà en cours."})
+            try:
+                change_program(target, action.removeprefix("program-"))
+            except ValueError as error:
+                return self.respond(422, {"error": str(error)})
+            finally:
+                PROGRAM_LOCK.release()
+            return self.respond(202, {"ok": True})
         settings = config()
         try:
             if action == "wake":
@@ -306,5 +421,9 @@ if __name__ == "__main__":
     STATE.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(SAMPLE_DB)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS samples (time INTEGER PRIMARY KEY, cpu REAL, ram REAL, temperature REAL, disk REAL)")
+        columns = {column[1] for column in db.execute("PRAGMA table_info(samples)")}
+        for column in ("load", "gpu"):
+            if column not in columns:
+                db.execute(f"ALTER TABLE samples ADD COLUMN {column} REAL")
     threading.Thread(target=sample_loop, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

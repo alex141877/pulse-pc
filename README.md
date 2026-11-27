@@ -19,6 +19,24 @@ Configurer le réveil dans le BIOS et la carte réseau. Dans `/etc/pulsepc/actio
 
 Le relais doit rester allumé sur le même réseau physique que la machine à réveiller. Ajouter le relais dans PulsePC avec son jeton de commande. Dans les paramètres du PC cible, sélectionner ce relais et saisir `pc-bureau`.
 
+### Programmes pilotables
+
+La section **Programmes** détecte EarnApp (`earnapp.service`), Honeygain (`honeygain`) et PacketStream (`psclient`) sur Debian. Les boutons demandent un jeton d’appairage avec le contrôle. Ils démarrent ou arrêtent le service ou le conteneur et la pastille indique son état actuel.
+
+Pour personnaliser la liste, crée `/etc/pulsepc/programs.json` en root. Ce fichier remplace la liste détectée et prend effet sans redémarrage. Pour autoriser d’autres applications, ajoute leurs entrées avec le type `systemd` ou `docker` et leur vrai nom local.
+
+```json
+{
+  "earnapp": {"name": "EarnApp", "kind": "systemd", "target": "earnapp.service"},
+  "honeygain": {"name": "Honeygain", "kind": "docker", "target": "honeygain"},
+  "packetstream": {"name": "PacketStream", "kind": "docker", "target": "psclient"}
+}
+```
+
+Sur un PC où Tailscale Serve est configuré, `sudo python3 /opt/pulsepc/pair.py` retrouve automatiquement l’adresse HTTPS privée.
+
+La charge système et le GPU ont leurs propres graphiques. La courbe GPU apparaît lorsque le pilote expose son utilisation. Les mesures de ces deux graphiques sont collectées à partir de l’agent v4.
+
 ## Builds et mises à jour
 
 - Android avec JDK 17, Gradle 8.9 et SDK 35 : configurer `PULSEPC_KEYSTORE` et `PULSEPC_KEYPASS`, puis lancer `gradle -p android assembleRelease`. Publier l'APK signé sous le nom `PulsePC-Android.apk`. Conserver la même clé de signature à chaque version et incrémenter `versionCode`. L'ancienne APK de débogage peut nécessiter une désinstallation, qui efface notamment la liste locale des PC.
