@@ -66,11 +66,11 @@ function save() {
 }
 async function api(pc, path, action) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), action ? 24000 : 4500);
+  const timer = setTimeout(() => ctrl.abort(), action || path.startsWith('/api/programs') ? 30000 : 4500);
   try {
     const target = new URL(pc.url);
     if (target.protocol !== 'https:' || target.username || target.password) throw Error('Adresse HTTPS requise');
-    const options = {headers:{Authorization:'Bearer ' + (action ? pc.control : pc.token)}, signal:ctrl.signal, cache:'no-store'};
+    const options = {headers:{Authorization:'Bearer ' + (action || path === '/api/programs/config' ? pc.control : pc.token)}, signal:ctrl.signal, cache:'no-store'};
     if (action) {
       options.method = 'POST';
       options.headers['Content-Type'] = 'application/json';
@@ -354,9 +354,307 @@ async function toggleProgram(pc, program) {
     render();
   }
 }
+function dialogBody(title) {
+  const dialog = q('#program-dialog');
+  const body = q('#program-dialog-body');
+  body.replaceChildren(el('h2',title));
+  dialog.showModal();
+  return body;
+}
+function dialogCloseButton() {
+  const close = button('Fermer',()=>q('#program-dialog').close());
+  close.type = 'button';
+  return close;
+}
+async function withProgramConfig(pc,title,prepare) {
+  const body = dialogBody(title);
+  const loading = el('p','Lecture de la liste…','muted');
+  body.append(loading);
+  try {
+    const config = await api(pc,'/api/programs/config');
+    if (q('#program-dialog').open && body.contains(loading)) {
+      loading.remove();
+      prepare(body,config);
+    }
+  } catch (error) {
+    loading.textContent = error.message;
+    body.append(dialogCloseButton());
+  }
+}
+async function savePrograms(pc, config, programs) {
+  await api(pc,'/api/programs/config',{revision:config.revision,programs});
+  q('#program-dialog').close();
+  await refreshPrograms(pc,true);
+  render();
+}
+function setupForm(body) {
+  const form = el('form');
+  form.noValidate = false;
+  const error = el('p',undefined,'program-dialog-error');
+  error.setAttribute('role','alert');
+  body.append(form);
+  return {form,error};
+}
+function field(parent,labelText,input) {
+  const label = el('label');
+  label.append(document.createTextNode(labelText),input);
+  parent.append(label);
+  return label;
+}
+function programEditor(pc, id) {
+  withProgramConfig(pc,id ? 'Modifier le programme' : 'Ajouter un programme',(body,config)=>{
+    const existing = config.programs.find(entry=>entry.id === id);
+    if (id && !existing) {body.append(el('p','Ce programme a été supprimé.'),dialogCloseButton());return;}
+    const {form,error} = setupForm(body);
+    const name = el('input');
+    name.maxLength=80;
+    name.required=true;
+    name.value=existing?.name || '';
+    field(form,'Nom à afficher',name);
+    const kind = el('select');
+    for (const [key,label] of Object.entries({systemd:'Service Debian (systemd)',docker:'Conteneur Docker',custom:'Commandes personnalisées'})) {
+      kind.add(new Option(label,key));
+    }
+    kind.value=existing?.kind || 'systemd';
+    field(form,'Type de programme',kind);
+    const target = el('input');
+    target.value=existing?.target || '';
+    target.maxLength=128;
+    target.spellcheck=false;
+    const targetField = field(form,'Nom du service ou conteneur sur Debian',target);
+    const advanced = el('details',undefined,'program-advanced');
+    advanced.append(el('summary','Options avancées'));
+    const note = el('textarea');
+    note.value=existing?.note || '';
+    note.maxLength=300;
+    note.rows=2;
+    field(advanced,'Note',note);
+    const commandFields = el('div');
+    commandFields.append(el('p','Choisis des profils approuvés sur ce Debian. Le dossier de travail est défini dans chaque profil.','muted'));
+    const selectors = {};
+    for (const [operation,label] of Object.entries({start:'Commande ON',stop:'Commande OFF',status:'Vérification de l’état'})) {
+      const select = el('select');
+      select.add(new Option('Choisir un profil',''));
+      for (const profile of config.profiles.filter(profile=>profile.operation===operation)) {
+        select.add(new Option(profile.name + ' · ' + profile.cwd,profile.id));
+      }
+      const old = existing?.[operation];
+      if (old && !Array.from(select.options).some(option=>option.value===old)) {
+        select.add(new Option(old + ' · profil introuvable',old));
+      }
+      select.value=old || '';
+      selectors[operation] = select;
+      field(commandFields,label,select);
+    }
+    const commandPreview = el('pre',undefined,'program-command-preview');
+    advanced.append(commandFields,commandPreview);
+    form.append(advanced);
+    function updateFields() {
+      const custom = kind.value === 'custom';
+      targetField.hidden = target.disabled = custom;
+      target.required = !custom;
+      target.placeholder = kind.value === 'docker' ? 'nom-du-conteneur' : 'mon-programme.service';
+      commandFields.hidden = !custom;
+      commandPreview.hidden = custom;
+      for (const select of Object.values(selectors)) {
+        select.disabled = !custom;
+        select.required = custom;
+      }
+      if (custom) advanced.open = true;
+      const name = target.value.trim() || target.placeholder;
+      const commands = kind.value === 'docker'
+        ? ['docker start ','docker stop ','docker inspect ']
+        : ['systemctl start ','systemctl stop ','systemctl is-active '];
+      commandPreview.textContent=commands.map(command=>command+name).join('\n');
+    }
+    kind.onchange=updateFields;
+    target.oninput=updateFields;
+    updateFields();
+    const actions = el('div',undefined,'actions');
+    const save = el('button','Enregistrer','primary');
+    save.type='submit';
+    actions.append(dialogCloseButton(),save);
+    form.append(error,actions);
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      save.disabled=true;
+      error.textContent='';
+      const entry = {id:existing?.id || 'p-' + crypto.randomUUID(),name:name.value.trim(),kind:kind.value,note:note.value.trim()};
+      if (entry.kind === 'custom') for (const [operation, select] of Object.entries(selectors)) entry[operation]=select.value;
+      else entry.target=target.value.trim();
+      const programs=existing ? config.programs.map(item=>item.id===id ? entry : item) : [...config.programs,entry];
+      try {await savePrograms(pc,config,programs);}
+      catch (failure) {error.textContent=failure.message;save.disabled=false;}
+    };
+  });
+}
+function removeProgram(pc,id) {
+  withProgramConfig(pc,'Retirer le programme',(body,config)=>{
+    const entry=config.programs.find(item=>item.id===id);
+    if (!entry) {body.append(el('p','Programme introuvable.'),dialogCloseButton());return;}
+    const error=el('p',undefined,'program-dialog-error');
+    const remove=button('Retirer',async()=>{
+      remove.disabled=true;
+      try {await savePrograms(pc,config,config.programs.filter(item=>item.id!==id));}
+      catch (failure) {error.textContent=failure.message;remove.disabled=false;}
+    },'trash');
+    remove.className='danger';
+    const actions=el('div',undefined,'actions');
+    actions.append(dialogCloseButton(),remove);
+    body.append(el('p','Retirer « ' + entry.name + ' » de la liste PulsePC ? Le programme conserve son état.'),error,actions);
+  });
+}
+function checklist(container,entries,defaultChecked) {
+  const list=el('div',undefined,'program-checklist');
+  const controls=entries.map(entry=>{
+    const input=el('input');
+    input.type='checkbox';
+    input.checked=defaultChecked(entry);
+    const label=el('label',undefined,'program-check');
+    const identity=el('span');
+    identity.append(el('strong',entry.name),el('small',entry.detail || entry.kind));
+    label.append(input,identity);
+    list.append(label);
+    return {input,entry};
+  });
+  container.append(list);
+  return controls;
+}
+function exportPrograms(pc) {
+  withProgramConfig(pc,'Exporter des programmes',(body,config)=>{
+    if (!config.programs.length) {body.append(el('p','La liste de ce PC est vide.'),dialogCloseButton());return;}
+    body.append(el('p','Coche les programmes à inclure.','muted'));
+    const controls=checklist(body,config.programs,()=>true);
+    const feedback=el('p',undefined,'program-dialog-error');
+    const copy=button('Copier le JSON',async()=>{
+      try {await navigator.clipboard.writeText(json());feedback.textContent='Copié.';}
+      catch {output.hidden=false;output.value=json();output.select();}
+    });
+    const download=button('Enregistrer le fichier',()=>{
+      const data=json();
+      if (window.pulsepcFiles?.postMessage) {window.pulsepcFiles.postMessage(data);return;}
+      const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+      const link=el('a');
+      link.href=url;
+      link.download='PulsePC-programmes.json';
+      link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),30000);
+    });
+    const output=el('textarea');
+    output.readOnly=true;
+    output.rows=5;
+    output.hidden=true;
+    const json=()=>JSON.stringify({format:'pulsepc-programs',version:1,programs:controls.filter(item=>item.input.checked).map(item=>item.entry)},null,2);
+    function refreshSelection() {
+      copy.disabled=download.disabled=!controls.some(item=>item.input.checked);
+      output.hidden=true;
+    }
+    for (const item of controls) item.input.onchange=refreshSelection;
+    const actions=el('div',undefined,'actions');
+    actions.append(dialogCloseButton(),copy,download);
+    body.append(output,feedback,actions);
+  });
+}
+function parsePrograms(text) {
+  if (new TextEncoder().encode(text).length > 65536) throw Error('Le fichier dépasse 64 Kio.');
+  const document=JSON.parse(text);
+  if (document?.format !== 'pulsepc-programs' || document.version !== 1 || !Array.isArray(document.programs)
+      || !document.programs.length || document.programs.length > 40) throw Error('Ce fichier ne contient pas une liste PulsePC valide.');
+  const idPattern=/^[a-z0-9][a-z0-9_-]{0,39}$/;
+  const ids=new Set();
+  return document.programs.map(entry=>{
+    if (!entry || typeof entry.id !== 'string' || !idPattern.test(entry.id) || ids.has(entry.id)
+        || typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > 80
+        || !['systemd','docker','custom'].includes(entry.kind)) throw Error('Un programme du fichier est invalide.');
+    ids.add(entry.id);
+    const data={id:entry.id,name:entry.name,kind:entry.kind,note:typeof entry.note === 'string' ? entry.note : ''};
+    if (entry.kind === 'custom') {
+      for (const operation of ['start','stop','status']) {
+        if (typeof entry[operation] !== 'string' || !idPattern.test(entry[operation])) throw Error('Profil personnalisé invalide.');
+        data[operation]=entry[operation];
+      }
+    } else {
+      if (typeof entry.target !== 'string') throw Error('Nom de service ou de conteneur manquant.');
+      data.target=entry.target;
+    }
+    return data;
+  });
+}
+function importPrograms(pc) {
+  withProgramConfig(pc,'Importer des programmes',(body,config)=>{
+    const input=el('input');
+    input.type='file';
+    input.accept='.json,application/json';
+    field(body,'Fichier PulsePC',input);
+    const source=el('textarea');
+    source.rows=4;
+    field(body,'Ou colle le JSON',source);
+    const preview=el('section');
+    const error=el('p',undefined,'program-dialog-error');
+    error.setAttribute('role','alert');
+    const save=button('Importer la sélection',async()=>{
+      save.disabled=true;
+      const result=new Map(config.programs.map(entry=>[entry.id,entry]));
+      for (const item of controls.filter(item=>item.input.checked)) {
+        const {detail,...entry}=item.entry;
+        result.set(entry.id,entry);
+      }
+      try {await savePrograms(pc,config,[...result.values()]);}
+      catch (failure) {error.textContent=failure.message;save.disabled=false;}
+    });
+    let controls=[];
+    save.disabled=true;
+    function refresh() {
+      preview.replaceChildren();
+      error.textContent='';
+      save.disabled=true;
+      controls=[];
+      if (!source.value.trim()) return;
+      try {
+        const existing=new Set(config.programs.map(entry=>entry.id));
+        const profiles=new Set(config.profiles.map(profile=>profile.id + ':' + profile.operation));
+        const entries=parsePrograms(source.value).map(entry=>{
+          const notes=[entry.kind];
+          if (existing.has(entry.id)) notes.push('remplace une entrée');
+          if (entry.kind==='custom' && ['start','stop','status'].some(operation=>!profiles.has(entry[operation]+':'+operation))) {
+            notes.push('profils à approuver sur ce Debian');
+          }
+          return {...entry,detail:notes.join(' · ')};
+        });
+        controls=checklist(preview,entries,entry=>!existing.has(entry.id));
+        const update=()=>{save.disabled=!controls.some(item=>item.input.checked);};
+        for (const item of controls) item.input.onchange=update;
+        update();
+      } catch (failure) {error.textContent=failure instanceof SyntaxError ? 'JSON invalide.' : failure.message;}
+    }
+    source.oninput=refresh;
+    input.onchange=async()=>{
+      const file=input.files[0];
+      if (!file) return;
+      if (file.size>65536) {error.textContent='Le fichier dépasse 64 Kio.';return;}
+      try {source.value=await file.text();refresh();}
+      catch {error.textContent='Impossible de lire ce fichier.';}
+    };
+    const actions=el('div',undefined,'actions');
+    actions.append(dialogCloseButton(),save);
+    body.append(preview,error,actions);
+  });
+}
+
+
 function renderPrograms(content, pc, record) {
   const panel = el('section',undefined,'panel programs');
-  panel.append(el('h2','Programmes'));
+  const toolbar=el('div',undefined,'pane-heading programs-toolbar');
+  toolbar.append(el('h2','Programmes'));
+  const editable=pc.control && record?.data?.apiVersion >= 5 && record?.level !== 'offline';
+  if (editable) {
+    const actions=el('div',undefined,'actions');
+    const add=button('Ajouter un programme',()=>programEditor(pc),'plus');
+    add.className='primary';
+    actions.append(add,button('Importer',()=>importPrograms(pc)),button('Exporter',()=>exportPrograms(pc)));
+    toolbar.append(actions);
+  }
+  panel.append(toolbar);
   if (record?.level === 'offline') {
     panel.append(el('p','Le PC est hors ligne.','muted'));
   } else if (!(record?.data?.apiVersion >= 4)) {
@@ -373,13 +671,19 @@ function renderPrograms(content, pc, record) {
       const row = el('div',undefined,'program-row program-' + program.state);
       const identity = el('div',undefined,'program-name');
       const info = el('div');
-      info.append(el('strong',program.name),el('small',program.kind === 'docker' ? 'Docker' : 'Service Debian'));
+      const type = {docker:'Docker',systemd:'Service Debian',custom:'Commandes personnalisées'};
+      info.append(el('strong',program.name),el('small',type[program.kind] || program.kind));
+      if (program.note) info.append(el('small',program.note));
       identity.append(icon('apps'),info);
       const pending = programActions.has(pc.id + ':' + program.id);
       const toggle = button(program.state === 'on' ? 'Arrêter' : 'Démarrer',()=>toggleProgram(pc,program));
       toggle.disabled = !pc.control || pending || !['on','off'].includes(program.state);
       const status = el('span',pending ? 'En cours' : programLabels[program.state] || 'Indisponible','program-status');
-      row.append(identity,status,toggle);
+      const controls=el('div',undefined,'actions program-controls');
+      controls.append(toggle);
+      if (editable) controls.append(button('Modifier',()=>programEditor(pc,program.id),'gear'),
+        button('Retirer',()=>removeProgram(pc,program.id),'trash'));
+      row.append(identity,status,controls);
       panel.append(row);
     }
   }

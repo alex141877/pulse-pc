@@ -15,12 +15,14 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from programs import ConflictError, ProgramRegistry
 
 ETC = Path("/etc/pulsepc")
 PORT = int(os.getenv("PULSEPC_PORT", "8765"))
 TOKEN = Path(os.getenv("PULSEPC_TOKEN_FILE", str(ETC / "token")))
 STATE = Path(os.getenv("STATE_DIRECTORY", "/var/lib/pulsepc")) / "history.json"
 SAMPLE_DB = STATE.with_name("samples.sqlite3")
+PROGRAMS = ProgramRegistry(ETC, STATE.parent)
 PERIODS = {"1h": (3600, 10), "24h": (86400, 240), "7d": (604800, 1800)}
 LOCK = threading.Lock()
 LATEST = None
@@ -115,7 +117,7 @@ def metrics():
         gpu = drm_gpu_usage() or gpu
     model = next((line.partition(":")[2].strip() for line in read("/proc/cpuinfo").splitlines()
                   if line.startswith("model name")), platform.machine())
-    return {"name": platform.node(), "os": platform.platform(), "uptime": duration(), "apiVersion": 4,
+    return {"name": platform.node(), "os": platform.platform(), "uptime": duration(), "apiVersion": 5,
             "cpu": {"usage": cpu_usage(), "name": model, "cores": os.cpu_count(), "load": round(os.getloadavg()[0], 2)},
             "memory": {"total": total, "used": used, "available": available, "free": free, "cached": cached},
             "disk": {"total": disk.f_blocks * disk.f_frsize, "used": used_disk, "available": available_disk,
@@ -214,88 +216,6 @@ def wake(target, settings):
         sender.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sender.sendto(b"\xff" * 6 + bytes.fromhex(mac) * 16, (address, 9))
 
-PROGRAM_LOCK = threading.Lock()
-
-
-def configured_programs():
-    path = ETC / "programs.json"
-    if not path.exists():
-        return {}
-    try:
-        definition = json.loads(read(path))
-    except ValueError:
-        return {}
-    if not isinstance(definition, dict):
-        return {}
-    result = {}
-    for key, entry in definition.items():
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", key) or not isinstance(entry, dict):
-            continue
-        name, kind, target = (entry.get(field) for field in ("name", "kind", "target"))
-        if not all(isinstance(value, str) and value for value in (name, kind, target)):
-            continue
-        if kind == "systemd":
-            if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,119}\.service", target):
-                continue
-            if target in {"pulsepc.service", "tailscaled.service", "docker.service", "ssh.service", "sshd.service"}:
-                continue
-        elif kind != "docker" or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", target):
-            continue
-        result[key] = {"name": name[:80], "kind": kind, "target": target}
-    return result
-
-
-def docker_program_states():
-    try:
-        listing = subprocess.check_output(
-            ["/usr/bin/docker", "container", "ls", "--all", "--format", "{{.Names}}\t{{.State}}"],
-            text=True, stderr=subprocess.DEVNULL, timeout=3)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return dict(line.split("\t", 1) for line in listing.splitlines() if "\t" in line)
-
-
-def service_state(target):
-    properties = run("/usr/bin/systemctl", "show", "-p", "LoadState", "-p", "ActiveState", "--", target)
-    values = dict(line.split("=", 1) for line in properties.splitlines() if "=" in line)
-    if values.get("LoadState") == "not-found":
-        return "missing"
-    return {"active": "on", "inactive": "off", "failed": "off", "activating": "pending",
-            "deactivating": "pending", "reloading": "pending"}.get(values.get("ActiveState"), "unknown")
-
-
-def program_status():
-    entries = configured_programs()
-    docker = docker_program_states() if any(entry["kind"] == "docker" for entry in entries.values()) else None
-    states = {"running": "on", "created": "off", "exited": "off", "dead": "off",
-              "restarting": "pending", "removing": "pending", "missing": "missing"}
-    items = []
-    for key, entry in entries.items():
-        if entry["kind"] == "docker":
-            state = "unknown" if docker is None else states.get(docker.get(entry["target"], "missing"), "unknown")
-        else:
-            state = service_state(entry["target"])
-        items.append({"id": key, "name": entry["name"], "kind": entry["kind"], "state": state})
-    return items
-
-
-def change_program(key, operation):
-    entries = configured_programs()
-    entry = entries.get(key)
-    if not entry:
-        raise ValueError("Programme absent de la liste autorisée.")
-    if entry["kind"] == "docker":
-        args = ["/usr/bin/docker", "container", operation]
-        if operation == "stop":
-            args.extend(["--time", "8"])
-    else:
-        args = ["/usr/bin/systemctl", operation, "--no-block"]
-    try:
-        subprocess.run([*args, "--", entry["target"]], check=True, timeout=18, capture_output=True)
-    except (OSError, subprocess.SubprocessError) as error:
-        raise ValueError("Debian a refusé le changement d’état de ce programme.") from error
-
-
 class Handler(BaseHTTPRequestHandler):
     def respond(self, code, data=None):
         raw = b"" if data is None else json.dumps(data).encode()
@@ -333,12 +253,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             return self.respond(200, {"ok": True})
+        if request.path == "/api/programs/config":
+            if not self.authorized(read(ETC / "control-token")):
+                return self.respond(401, {"error": "Jeton de commande refusé."})
+            return self.respond(200, PROGRAMS.configuration())
         if request.path not in {"/api/status", "/api/history", "/api/programs"}:
             return self.respond(404, {"error": "Route inconnue."})
         if not self.authorized(read(TOKEN)):
             return self.respond(401, {"error": "Jeton de suivi refusé."})
         if request.path == "/api/programs":
-            return self.respond(200, {"programs": program_status()})
+            return self.respond(200, {"programs": PROGRAMS.statuses()})
         with LOCK:
             data = dict(LATEST) if LATEST else None
             if request.path == "/api/history":
@@ -355,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(200 if data else 503, data or {"error": "Première mesure en cours."})
 
     def do_POST(self):
-        if self.path != "/api/action":
+        if self.path not in {"/api/action", "/api/programs/config"}:
             return self.respond(404, {"error": "Route inconnue."})
         if not self.authorized(read(ETC / "control-token")):
             return self.respond(401, {"error": "Jeton de commande refusé."})
@@ -363,26 +287,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(415, {"error": "JSON requis."})
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 1024:
+            limit = 65536 if self.path == "/api/programs/config" else 1024
+            if not 0 < size <= limit:
                 raise ValueError()
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError()
         except (ValueError, UnicodeError):
             return self.respond(400, {"error": "Requête invalide."})
+        if self.path == "/api/programs/config":
+            try:
+                return self.respond(200, PROGRAMS.save(data))
+            except ConflictError as error:
+                return self.respond(409, {"error": str(error)})
+            except ValueError as error:
+                return self.respond(422, {"error": str(error)})
+            except OSError:
+                return self.respond(500, {"error": "Impossible d’enregistrer la liste sur ce Debian."})
         action = data.get("action")
         if isinstance(action, str) and action in {"program-start", "program-stop"}:
             target = data.get("target")
             if not isinstance(target, str) or not target:
                 return self.respond(400, {"error": "Identifiant du programme manquant."})
-            if not PROGRAM_LOCK.acquire(blocking=False):
-                return self.respond(409, {"error": "Un changement de programme est déjà en cours."})
             try:
-                change_program(target, action.removeprefix("program-"))
+                PROGRAMS.change(target, action.removeprefix("program-"))
             except ValueError as error:
                 return self.respond(422, {"error": str(error)})
-            finally:
-                PROGRAM_LOCK.release()
             return self.respond(202, {"ok": True})
         settings = config()
         try:

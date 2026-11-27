@@ -21,17 +21,29 @@ Le relais doit rester allumé sur le même réseau physique que la machine à r�
 
 ### Programmes pilotables
 
-Chaque PC démarre avec une liste de programmes vide. Pour en ajouter, l’administrateur de ce Debian crée `/etc/pulsepc/programs.json`. La liste prend effet sans redémarrer l’agent. Les commandes **Démarrer** et **Arrêter** requièrent le jeton de contrôle.
+Chaque PC démarre avec une liste vide. Dans **Tableau de bord → Programmes**, **Ajouter un programme** accepte un service systemd ou un conteneur Docker. Indique le nom local, par exemple `mon-service.service` ou `mon-conteneur`. Un jeton de commande est requis pour modifier la liste ou basculer l’état.
 
-Indique le nom local d’un service `systemd` ou d’un conteneur `docker`. Remplace les noms ci-dessous par les tiens.
+**Exporter** produit un fichier JSON avec les programmes cochés. Sur l’autre PC, **Importer** permet de les vérifier et de sélectionner ceux à ajouter. Les entrées déjà présentes sont décochées au départ. Les jetons et les scripts restent sur leurs machines.
+
+#### Commandes et dossiers personnalisés
+
+Pour utiliser des commandes spécifiques, définis les profils dans `/etc/pulsepc/program-commands.json`, fichier réservé à l’administrateur Debian. Un profil associe une action (`start`, `stop` ou `status`), une liste d’arguments `argv` dont le premier est un chemin absolu, un dossier de travail `cwd` et un utilisateur local sans privilège root. Le profil d’état doit être en lecture seule et retourner 0 pour ON ou 1 pour OFF.
 
 ```json
 {
-  "mon-service": {"name": "Mon service", "kind": "systemd", "target": "mon-service.service"},
-  "mon-conteneur": {"name": "Mon conteneur", "kind": "docker", "target": "mon-conteneur"}
+  "mon-app-on": {
+    "name": "Démarrer mon application",
+    "operation": "start",
+    "argv": ["/opt/mon-app/start.sh"],
+    "cwd": "/opt/mon-app",
+    "user": "mon-utilisateur"
+  }
 }
 ```
 
+Crée également les profils `stop` et `status`, puis sélectionne les trois profils dans les **Options avancées**. Sur un autre Debian, les mêmes identifiants peuvent pointer vers ses propres scripts et dossiers. Un profil absent rend l’entrée indisponible.
+
+Le fichier `/etc/pulsepc/programs.json` sert de liste initiale. Dès la première modification depuis PulsePC, la liste est enregistrée dans le répertoire d’état de l’agent.
 Sur un PC où Tailscale Serve est configuré, `sudo python3 /opt/pulsepc/pair.py` retrouve automatiquement l’adresse HTTPS privée.
 
 La charge système et le GPU ont leurs propres graphiques. La courbe GPU apparaît lorsque le pilote expose son utilisation. Les mesures de ces deux graphiques sont collectées à partir de l’agent v4.
