@@ -93,7 +93,7 @@ const extraReadings = [
   {id:'load',label:'Charge système',icon:'load',unit:'',value:data=>data?.cpu?.load},
   {id:'gpu',label:'Carte graphique',icon:'gpu',unit:'%',max:100,value:data=>data?.gpu?.usage}
 ];
-let view = pcs.length ? 'nodes' : 'overview';
+let view = 'overview';
 let period = '1h';
 let requestId = 0;
 let wakePc;
@@ -114,6 +114,7 @@ function go(next, pc) {
   q('#feedback').textContent = '';
   render();
   if (next === 'detail') refreshHistory(pc);
+  if (next === 'nodes') for (const node of pcs.filter(item=>item.inTopology === true)) refreshPrograms(node);
 }
 async function refreshHistory(pc) {
   const record = state.get(pc.id);
@@ -144,13 +145,18 @@ async function poll() {
       try {
         const data = await api(pc, '/api/status');
         const previous = state.get(pc.id);
-        if (pcs.includes(pc)) state.set(pc.id, {...previous,data,error:null,level:data.status?.level || 'green'});
+        if (pcs.includes(pc)) {
+          state.set(pc.id, {...previous,data,error:null,level:data.status?.level || 'green'});
+          lastSignals[pc.id] = Math.floor(Date.now()/1000);
+        }
       } catch (error) {
         if (pcs.includes(pc)) state.set(pc.id, {...state.get(pc.id),level:'offline',
           error:error.name === 'AbortError' || error instanceof TypeError ? 'Agent injoignable. Vérifie Tailscale.' : error.message});
       }
     }));
+    localStorage.setItem('pulsepc.lastSignals',JSON.stringify(lastSignals));
     render();
+    if (view === 'nodes') for (const node of pcs.filter(item=>item.inTopology === true)) refreshPrograms(node);
     const pc = pcs.find(item => item.id === active);
     if (view === 'detail' && pc) {
       if (detailSection === 'programs') refreshPrograms(pc);
@@ -262,21 +268,7 @@ function nodeCard(pc) {
   return card;
 }
 function renderOverview(content) {
-  content.append(header('Vue d’ensemble',addButton()),summary());
-  if (!pcs.length) {
-    content.append(el('p','Ajoute un PC pour afficher ses mesures.','muted'));
-    return;
-  }
-  const list = el('section',undefined,'panel');
-  for (const pc of pcs) {
-    const row = el('div',undefined,'settings-row');
-    row.append(el('strong',pc.name),badge(state.get(pc.id)?.level || 'waiting'),button('Tableau de bord',()=>go('detail',pc)));
-    list.append(row);
-  }
-  content.append(list);
-}
-function renderNodes(content) {
-  content.append(header('Nœuds'),summary());
+  content.append(header('Vue d’ensemble'),summary());
   const grid = el('section',undefined,'grid nodes');
   for (const pc of pcs) grid.append(nodeCard(pc));
   const add = button('Ajouter un PC',() => edit(),'plus');
@@ -284,6 +276,233 @@ function renderNodes(content) {
   grid.append(add);
   content.append(grid);
 }
+
+const svgNamespace = 'http://www.w3.org/2000/svg';
+let topology;
+let panelPc;
+let panelReturn;
+let panelSignature;
+const lastSignals = load('pulsepc.lastSignals', {});
+
+function svgElement(tag, attributes = {}) {
+  const element = document.createElementNS(svgNamespace,tag);
+  for (const [name,value] of Object.entries(attributes)) element.setAttribute(name,String(value));
+  return element;
+}
+function topologyPrograms(pc) {
+  return state.get(pc.id)?.programs?.items || [];
+}
+function programIcon(program) {
+  const symbols = {docker:'apps',systemd:'gear',custom:'terminal'};
+  return icon(symbols[program.kind] || 'apps');
+}
+function showTopologyPrograms(pc, trigger) {
+  panelPc = pc.id;
+  panelReturn = trigger;
+  renderTopologyPanel();
+  q('#topology-close').focus();
+  refreshPrograms(pc);
+}
+function closeTopologyPanel(restoreFocus = false) {
+  panelPc = null;
+  panelSignature = null;
+  q('#topology-panel').hidden = true;
+  if (restoreFocus && panelReturn?.isConnected) panelReturn.focus();
+  panelReturn = null;
+}
+function renderTopologyPanel() {
+  const pc = pcs.find(item => item.id === panelPc && item.inTopology === true);
+  if (view !== 'nodes' || !pc) {closeTopologyPanel();return;}
+  const panel = q('#topology-panel');
+  const record = state.get(pc.id);
+  const items = topologyPrograms(pc);
+  const signature = JSON.stringify([pc.id,pc.name,pc.control !== '',record?.level,record?.data?.apiVersion,!!record?.programs,record?.programs?.error,items]);
+  if (panelSignature === signature && !panel.hidden) return;
+  panelSignature = signature;
+  q('#topology-panel-pc').textContent = pc.name;
+  const list = q('#topology-panel-apps');
+  list.replaceChildren();
+  const online = record?.level && !['offline','waiting'].includes(record.level);
+  const canEdit = online && pc.control && record?.data?.apiVersion >= 5;
+  const add = q('#topology-panel-add');
+  add.disabled = !canEdit;
+  add.onclick = () => programEditor(pc);
+  if (!online) list.append(el('p','Le PC est hors ligne ou en attente.','muted'));
+  if (record?.programs?.error) list.append(el('p',record.programs.error,'muted'));
+  if (!items.length && online && !record?.programs?.error) {
+    const message = record?.data?.apiVersion < 4 ? 'L’agent de ce PC ne fournit pas sa liste d’applications.' :
+      record?.programs ? 'Aucune application configurée.' : 'Lecture des applications…';
+    list.append(el('p',message,'muted'));
+  }
+  const appStates = {...programLabels,on:'En cours d’exécution',off:'Arrêtée'};
+  for (const program of items) {
+    const row = el('article',undefined,'topology-app');
+    const frame = el('span',undefined,'app-symbol');
+    frame.append(programIcon(program));
+    const text = el('div');
+    const current = online ? program.state : 'unknown';
+    const status = el('small',undefined,current === 'on' ? 'green' : current === 'off' ? 'red' : 'offline');
+    status.append(el('span',undefined,'dot'),document.createTextNode(appStates[current] || 'Indisponible'));
+    text.append(el('strong',program.name),status);
+    const gear = button('',()=>programEditor(pc,program.id),'gear');
+    gear.className = 'topology-gear';
+    gear.disabled = !canEdit;
+    gear.setAttribute('aria-label','Paramètres de ' + program.name);
+    row.append(frame,text,gear);
+    list.append(row);
+  }
+  panel.hidden = false;
+}
+function topologyCard(pc, record, programs) {
+  const level = record?.level || 'waiting';
+  const card = el('article',undefined,'topology-card ' + level);
+  card.dataset.pc = pc.id;
+  card.onclick = () => go('detail',pc);
+  const head = button('',undefined,'monitor');
+  head.className = 'topology-card-head';
+  const title = el('div');
+  title.append(el('strong',pc.name),badge(level));
+  head.append(title);
+  head.setAttribute('aria-label','Ouvrir la fiche de ' + pc.name);
+  card.append(head,el('p',undefined,'topology-signal'));
+  if (programs.length || topologyPrograms(pc).length) {
+    const apps = el('div',undefined,'topology-apps');
+    for (const program of programs.slice(0,3)) {
+      const capsule = button(program.name,event=>{
+        event.stopPropagation();
+        showTopologyPrograms(pc,event.currentTarget);
+      });
+      capsule.prepend(programIcon(program));
+      capsule.className = 'topology-capsule';
+      capsule.title = program.name;
+      apps.append(capsule);
+    }
+    card.append(apps);
+  }
+  const more = button(programs.length > 3 ? 'Afficher plus' : 'Applications',event=>{
+    event.stopPropagation();
+    showTopologyPrograms(pc,event.currentTarget);
+  },'apps');
+  more.className='topology-more';
+  card.append(more);
+  return card;
+}
+function animateLink(group, path, index) {
+  const phase = (index % 8) * -.55;
+  const length = path.getTotalLength();
+  const point = path.getPointAtLength(length * .48);
+  group.append(svgElement('circle',{cx:point.x,cy:point.y,r:3,class:'link-still'}));
+  for (let trail = 3; trail >= 0; trail--) {
+    const bubble = svgElement('circle',{r:4-trail*.7,class:trail === 0 ? 'link-bubble' : 'link-bubble link-trail'});
+    const settings = {dur:'4.3s',begin:(phase+trail*.055)+'s',repeatCount:'indefinite'};
+    bubble.append(svgElement('animateMotion',{...settings,path:path.getAttribute('d'),
+      keyPoints:'0;1;1',keyTimes:'0;.57;1',calcMode:'linear'}));
+    bubble.append(svgElement('animate',{...settings,attributeName:'opacity',
+      values:trail === 0 ? '0;1;.9;0;0' : '0;.33;.27;0;0',keyTimes:'0;.08;.48;.57;1'}));
+    group.append(bubble);
+  }
+}
+function drawTopologyLinks(board) {
+  if (!board.root.isConnected) return;
+  const bounds = board.map.getBoundingClientRect();
+  const hub = board.hub.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  const x = hub.left + hub.width/2 - bounds.left;
+  const y = hub.top + hub.height/2 - bounds.top;
+  const geometry = [];
+  for (const {card} of board.cards.values()) {
+    const rect = card.getBoundingClientRect();
+    const endX = rect.left + rect.width/2 - bounds.left;
+    const upper = rect.top < hub.top;
+    const endY = (upper ? rect.bottom : rect.top) - bounds.top;
+    const dx = endX - x, dy = endY - y;
+    const distance = Math.hypot(dx,dy) || 1;
+    const startX = x + dx/distance * hub.width/2;
+    const startY = y + dy/distance * hub.height/2;
+    const midY = (startY + endY) / 2;
+    const coordinates = [startX,startY,midY,endX,endY].map(value=>Math.round(value * 2) / 2);
+    geometry.push({id:card.dataset.pc,online:!card.matches('.offline,.waiting'),coordinates});
+  }
+  const signature = JSON.stringify([Math.round(bounds.width),Math.round(bounds.height),geometry]);
+  if (signature === board.linkSignature) return;
+  board.linkSignature = signature;
+  board.links.setAttribute('viewBox','0 0 ' + bounds.width + ' ' + bounds.height);
+  board.links.replaceChildren();
+  board.paths.clear();
+  geometry.forEach(({id, online, coordinates:[sx,sy,my,ex,ey]},index)=>{
+    const group = svgElement('g',{class:'topology-link' + (online ? '' : ' is-offline')});
+    const path = svgElement('path',{d:'M ' + sx + ' ' + sy + ' C ' + sx + ' ' + my + ' ' + ex + ' ' + my + ' ' + ex + ' ' + ey});
+    group.append(path);
+    board.links.append(group);
+    board.paths.set(id,group);
+    if (online) animateLink(group,path,index);
+    if (board.cards.get(id)?.card.matches(':hover,:focus-within')) group.classList.add('highlight');
+  });
+}
+function createTopology(content) {
+  const root = el('section',undefined,'topology-page');
+  const empty = el('section',undefined,'panel topology-empty');
+  empty.append(el('p','Aucun PC sélectionné pour Nœuds.'),button('Choisir les PC',()=>go('settings'),'gear'));
+  const map = el('div',undefined,'topology-map');
+  const links = svgElement('svg',{class:'topology-links','aria-hidden':'true'});
+  const upper = el('div',undefined,'topology-band');
+  const lower = el('div',undefined,'topology-band');
+  const hub = el('div',undefined,'topology-hub');
+  hub.title = 'Coordinateur · représentation visuelle';
+  hub.append(icon('disk'),el('strong','DB'));
+  map.append(links,upper,hub,lower);
+  root.append(header('Nœuds'),empty,map);
+  content.append(root);
+  const board = {root,empty,map,links,upper,hub,lower,cards:new Map(),paths:new Map()};
+  board.observer = new ResizeObserver(()=>drawTopologyLinks(board));
+  board.observer.observe(map);
+  return board;
+}
+function renderNodes(content) {
+  if (!topology?.root.isConnected) topology = createTopology(content);
+  const board = topology;
+  const included = pcs.filter(pc=>pc.inTopology === true);
+  board.empty.hidden = !!included.length;
+  board.map.hidden = !included.length;
+  const stillIncluded = new Set(included.map(pc=>pc.id));
+  for (const [id,entry] of board.cards) {
+    if (stillIncluded.has(id)) continue;
+    board.observer.unobserve(entry.card);
+    entry.card.remove();
+    board.cards.delete(id);
+  }
+  included.forEach((pc,index)=>{
+    const record = state.get(pc.id);
+    const online = record?.level && !['waiting','offline'].includes(record.level);
+    const programs = online ? topologyPrograms(pc).filter(program=>program.state === 'on') : [];
+    const band = index < 2 ? board.upper : board.lower;
+    let entry = board.cards.get(pc.id);
+    const signature = JSON.stringify([pc.name,record?.level,topologyPrograms(pc).length,programs]);
+    if (entry?.signature !== signature) {
+      const card = topologyCard(pc,record,programs);
+      const highlight = active => board.paths.get(pc.id)?.classList.toggle('highlight',active);
+      card.onpointerenter = () => highlight(true);
+      card.addEventListener('focusin',()=>highlight(true));
+      card.onpointerleave = () => highlight(card.matches(':focus-within'));
+      card.addEventListener('focusout',event=>{if (!card.contains(event.relatedTarget)) highlight(card.matches(':hover'));});
+      if (entry) {
+        board.observer.unobserve(entry.card);
+        entry.card.replaceWith(card);
+      }
+      board.observer.observe(card);
+      entry = {card,signature};
+      board.cards.set(pc.id,entry);
+    }
+    if (entry.card.parentElement !== band) band.append(entry.card);
+    const lastSignal = lastSignals[pc.id];
+    entry.card.querySelector('.topology-signal').textContent = 'Dernier signal · ' +
+      (lastSignal ? date(lastSignal) : 'Aucun');
+  });
+  board.lower.hidden = included.length <= 2;
+  drawTopologyLinks(board);
+  renderTopologyPanel();
+}
+
 function renderSettings(content) {
   content.append(header('Paramètres',addButton()));
   const panel = el('section',undefined,'panel');
@@ -294,7 +513,18 @@ function renderSettings(content) {
     const remove = button('Supprimer',()=>removePc(pc),'trash');
     remove.className = 'danger';
     actions.append(button('Modifier',()=>edit(pc),'gear'),button('Wake-on-LAN',()=>editWake(pc)),remove);
-    row.append(el('strong',pc.name),actions);
+    const title = el('div',undefined,'node-setting');
+    const check = el('input');
+    check.type = 'checkbox';
+    check.checked = pc.inTopology === true;
+    check.onchange = () => {
+      pc.inTopology = check.checked;
+      save();
+    };
+    const label = el('label',undefined,'node-check');
+    label.append(check,document.createTextNode('Afficher dans Nœuds'));
+    title.append(el('strong',pc.name),label);
+    row.append(title,actions);
     panel.append(row);
   }
   content.append(panel);
@@ -305,6 +535,8 @@ function removePc(pc) {
   if (index === -1) return;
   pcs.splice(index,1);
   state.delete(pc.id);
+  delete lastSignals[pc.id];
+  localStorage.setItem('pulsepc.lastSignals',JSON.stringify(lastSignals));
   if (active === pc.id) active = pcs[0]?.id;
   for (const item of pcs) {
     if (item.relay === pc.id) {item.relay = ''; item.target = '';}
@@ -321,7 +553,7 @@ let detailSection = 'metrics';
 async function refreshPrograms(pc, force = false) {
   const record = state.get(pc.id);
   if (record?.level === 'offline' || !(record?.data?.apiVersion >= 4) || programRequests.has(pc.id)) return;
-  if (!force && Date.now() - (record.programs?.loaded || 0) < 4500) return;
+  if (!force && Date.now() - (record.programs?.loaded || 0) < (view === 'nodes' ? 12000 : 4500)) return;
   programRequests.add(pc.id);
   let result;
   try {
@@ -335,7 +567,7 @@ async function refreshPrograms(pc, force = false) {
   const latest = state.get(pc.id);
   if (!pcs.includes(pc) || !latest) return;
   latest.programs = {...result,loaded:Date.now()};
-  if (view === 'detail' && detailSection === 'programs' && active === pc.id) render();
+  if ((view === 'detail' && detailSection === 'programs' && active === pc.id) || (view === 'nodes' && pc.inTopology === true)) render();
 }
 async function toggleProgram(pc, program) {
   const key = pc.id + ':' + program.id;
@@ -694,7 +926,7 @@ function renderDetail(content,pc) {
   const record = state.get(pc.id);
   const data = record?.data;
   const crumbs = el('div',undefined,'crumbs');
-  crumbs.append(button('Nœuds',()=>go('nodes')),el('span','/','muted'),el('span',pc.name));
+  crumbs.append(button('Vue d’ensemble',()=>go('overview')),el('span','/','muted'),el('span',pc.name));
   const title = el('header',undefined,'title');
   const identity = el('div');
   const name = el('div',undefined,'title-group');
@@ -787,17 +1019,26 @@ function renderDetail(content,pc) {
 function render() {
   if (document.querySelector('dialog[open]')) return;
   const content = q('#content');
+  for (const item of document.querySelectorAll('nav button')) {
+    if (item.dataset.view === (view === 'detail' ? 'overview' : view)) item.setAttribute('aria-current','page');
+    else item.removeAttribute('aria-current');
+  }
+  if (view === 'nodes') {
+    if (!topology?.root.isConnected) content.replaceChildren();
+    renderNodes(content);
+    return;
+  }
+  if (topology) {
+    topology.observer.disconnect();
+    topology = null;
+  }
+  closeTopologyPanel();
   const focused = content.contains(document.activeElement) && document.activeElement.tagName === 'BUTTON'
     ? Array.from(content.querySelectorAll('button')).indexOf(document.activeElement) : -1;
   content.replaceChildren();
-  for (const item of document.querySelectorAll('nav button')) {
-    if (item.dataset.view === (view === 'detail' ? 'nodes' : view)) item.setAttribute('aria-current','page');
-    else item.removeAttribute('aria-current');
-  }
   const pc = pcs.find(item => item.id === active);
   if (view === 'detail' && pc) renderDetail(content,pc);
   else if (view === 'settings') renderSettings(content);
-  else if (view === 'nodes') renderNodes(content);
   else renderOverview(content);
   if (focused >= 0) content.querySelectorAll('button')[focused]?.focus({preventScroll:true});
 }
@@ -888,7 +1129,7 @@ q('#pc-form').onsubmit = event => {
     active = pc.id;
     save();
     q('#editor').close();
-    if (!editing) go('nodes');
+    if (!editing) go('overview');
     else render();
     poll();
   } catch (error) {q('#edit-error').textContent = error.message;}
@@ -910,6 +1151,10 @@ q('#wake-form').onsubmit = event => {
   save();
 };
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('close',render);
+q('#topology-close').onclick = () => closeTopologyPanel(true);
+document.addEventListener('keydown',event=>{
+  if (event.key === 'Escape' && !q('#topology-panel').hidden && !document.querySelector('dialog[open]')) closeTopologyPanel(true);
+});
 const navIcons = {overview:'home',nodes:'nodes',settings:'gear'};
 for (const item of document.querySelectorAll('nav button')) {
   item.prepend(icon(navIcons[item.dataset.view]));

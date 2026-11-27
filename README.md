@@ -2,6 +2,10 @@
 
 PulsePC suit plusieurs PC Linux depuis Windows et Android avec la même interface. Chaque agent Debian mesure le CPU, la RAM, le stockage et les capteurs disponibles toutes les cinq secondes. Il conserve les 500 derniers changements d'état et expose jusqu’à sept jours de mesures pour les graphiques 1 h, 24 h et 7 j. Les mesures et les événements sont enregistrés sur le PC et partagés entre les clients. La collecte commence à l’installation de l’agent v3.
 
+## Vue d’ensemble et Nœuds
+
+La vue d’ensemble affiche tous les PC suivis. Pour inclure un PC dans la carte Nœuds, coche « Afficher dans Nœuds » dans les paramètres de ce PC. Ce choix est enregistré sur l’appareil qui utilise PulsePC. La carte et ses animations sont visuelles. Le cercle DB représente l’emplacement du futur coordinateur et la carte ne synchronise aucune donnée.
+
 ## Debian
 
 Depuis le dossier source, lancer `sudo sh install-debian.sh`. Pour autoriser l'arrêt et le redémarrage lors de la première configuration, ajouter `--enable-power`. Un fichier existant `/etc/pulsepc/actions.json` est conservé. Contrôler que `tailscale serve status` affiche un point d'entrée HTTPS **tailnet only** vers `http://127.0.0.1:8765`. Sur une machine sans autre configuration Tailscale Serve, on peut créer ce point d'entrée avec `sudo tailscale serve --bg http://127.0.0.1:8765`.

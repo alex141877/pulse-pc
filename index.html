@@ -24,6 +24,14 @@
 <div id="content" aria-label="Suivi des machines"></div>
 <p id="feedback" role="status"></p>
 </main>
+<aside id="topology-panel" class="topology-panel" aria-labelledby="topology-panel-title" hidden>
+  <header class="topology-panel-head">
+    <div><h2 id="topology-panel-title">Applications</h2><p id="topology-panel-pc"></p></div>
+    <button id="topology-close" type="button" aria-label="Fermer le panneau">×</button>
+  </header>
+  <div id="topology-panel-apps"></div>
+  <button id="topology-panel-add" class="primary" type="button">Ajouter une application</button>
+</aside>
 <dialog id="editor">
 <h2 id="editor-title">Ajouter un PC</h2>
 <div class="segments setup-tabs" aria-label="Étapes de configuration">
@@ -35,7 +43,7 @@
   <pre><code id="install-code">sudo apt-get update
 sudo apt-get install -y git python3
 pulsepc_dir=$(mktemp -d)
-git clone --depth 1 --branch v2.3.0 https://github.com/alex141877/pulse-pc.git "$pulsepc_dir"
+git clone --depth 1 --branch v2.4.0 https://github.com/alex141877/pulse-pc.git "$pulsepc_dir"
 sudo sh "$pulsepc_dir/install-debian.sh" --enable-power
 sudo tailscale serve status</code></pre>
   <button id="copy-install" type="button">Copier l’installation</button>
