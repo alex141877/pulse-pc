@@ -366,7 +366,7 @@ function renderPrograms(content, pc, record) {
   } else if (!record.programs) {
     panel.append(el('p','Lecture de l’état des programmes…','muted'));
   } else if (!record.programs.items?.length) {
-    panel.append(el('p','Aucun programme configuré. Ajoute tes services ou conteneurs dans /etc/pulsepc/programs.json.','muted'));
+    panel.append(el('p','Aucun programme configuré pour ce PC.','muted'));
   } else {
     if (!pc.control) panel.append(el('p','Ajoute un jeton d’appairage avec les droits de commande pour démarrer ou arrêter les programmes.','muted'));
     for (const program of record.programs.items) {

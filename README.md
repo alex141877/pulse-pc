@@ -21,15 +21,14 @@ Le relais doit rester allumé sur le même réseau physique que la machine à r�
 
 ### Programmes pilotables
 
-La section **Programmes** détecte EarnApp (`earnapp.service`), Honeygain (`honeygain`) et PacketStream (`psclient`) sur Debian. Les boutons demandent un jeton d’appairage avec le contrôle. Ils démarrent ou arrêtent le service ou le conteneur et la pastille indique son état actuel.
+Chaque PC démarre avec une liste de programmes vide. Pour en ajouter, l’administrateur de ce Debian crée `/etc/pulsepc/programs.json`. La liste prend effet sans redémarrer l’agent. Les commandes **Démarrer** et **Arrêter** requièrent le jeton de contrôle.
 
-Pour personnaliser la liste, crée `/etc/pulsepc/programs.json` en root. Ce fichier remplace la liste détectée et prend effet sans redémarrage. Pour autoriser d’autres applications, ajoute leurs entrées avec le type `systemd` ou `docker` et leur vrai nom local.
+Indique le nom local d’un service `systemd` ou d’un conteneur `docker`. Remplace les noms ci-dessous par les tiens.
 
 ```json
 {
-  "earnapp": {"name": "EarnApp", "kind": "systemd", "target": "earnapp.service"},
-  "honeygain": {"name": "Honeygain", "kind": "docker", "target": "honeygain"},
-  "packetstream": {"name": "PacketStream", "kind": "docker", "target": "psclient"}
+  "mon-service": {"name": "Mon service", "kind": "systemd", "target": "mon-service.service"},
+  "mon-conteneur": {"name": "Mon conteneur", "kind": "docker", "target": "mon-conteneur"}
 }
 ```
 

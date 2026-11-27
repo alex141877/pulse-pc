@@ -214,24 +214,19 @@ def wake(target, settings):
         sender.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sender.sendto(b"\xff" * 6 + bytes.fromhex(mac) * 16, (address, 9))
 
-DEFAULT_PROGRAMS = {
-    "earnapp": {"name": "EarnApp", "kind": "systemd", "target": "earnapp.service"},
-    "honeygain": {"name": "Honeygain", "kind": "docker", "target": "honeygain"},
-    "packetstream": {"name": "PacketStream", "kind": "docker", "target": "psclient"},
-}
 PROGRAM_LOCK = threading.Lock()
 
 
 def configured_programs():
     path = ETC / "programs.json"
     if not path.exists():
-        return DEFAULT_PROGRAMS, True
+        return {}
     try:
         definition = json.loads(read(path))
     except ValueError:
-        return {}, False
+        return {}
     if not isinstance(definition, dict):
-        return {}, False
+        return {}
     result = {}
     for key, entry in definition.items():
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", key) or not isinstance(entry, dict):
@@ -247,7 +242,7 @@ def configured_programs():
         elif kind != "docker" or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", target):
             continue
         result[key] = {"name": name[:80], "kind": kind, "target": target}
-    return result, False
+    return result
 
 
 def docker_program_states():
@@ -270,7 +265,7 @@ def service_state(target):
 
 
 def program_status():
-    entries, automatic = configured_programs()
+    entries = configured_programs()
     docker = docker_program_states() if any(entry["kind"] == "docker" for entry in entries.values()) else None
     states = {"running": "on", "created": "off", "exited": "off", "dead": "off",
               "restarting": "pending", "removing": "pending", "missing": "missing"}
@@ -280,13 +275,12 @@ def program_status():
             state = "unknown" if docker is None else states.get(docker.get(entry["target"], "missing"), "unknown")
         else:
             state = service_state(entry["target"])
-        if not (automatic and state in {"missing", "unknown"}):
-            items.append({"id": key, "name": entry["name"], "kind": entry["kind"], "state": state})
+        items.append({"id": key, "name": entry["name"], "kind": entry["kind"], "state": state})
     return items
 
 
 def change_program(key, operation):
-    entries, _ = configured_programs()
+    entries = configured_programs()
     entry = entries.get(key)
     if not entry:
         raise ValueError("Programme absent de la liste autorisée.")
